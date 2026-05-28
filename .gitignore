@@ -1,0 +1,20 @@
+# dependencies
+node_modules/
+
+# build artifacts
+artifacts/
+cache/
+
+# local secrets
+.env*
+!.env.example
+
+# local outputs
+deployments/
+submissions/
+
+# optional local docs and one-off helper scripts (keep local, skip commit)
+docs/step1-v4-native-hook-progress.md
+docs/step2-v4-real-flow-progress.md
+docs/superpowers/
+scripts/check-env.js
