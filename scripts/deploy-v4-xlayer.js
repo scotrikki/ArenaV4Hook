@@ -203,13 +203,17 @@ async function main() {
   const nowBlock = await ethers.provider.getBlock("latest");
   const quoteDeadline = BigInt(nowBlock.timestamp) + quoteWindowSec;
   const validUntil = BigInt(nowBlock.timestamp) + quoteValidSec;
+  const requestSalt = ethers.keccak256(
+    ethers.solidityPacked(["address", "uint256", "uint64"], [deployer.address, swapAmountIn, nowBlock.timestamp])
+  );
 
-  const requestId = await hook.computeRequestId(
+  const requestId = await hook.computeRequestIdWithSalt(
     deployer.address,
     swapAmountIn,
     currency0Addr,
     currency1Addr,
-    true
+    true,
+    requestSalt
   );
   const nonce = await hook.agentNonces(quoteAgent);
   const digest = ethers.solidityPackedKeccak256(
@@ -220,7 +224,7 @@ async function main() {
 
   const hookData = ethers.AbiCoder.defaultAbiCoder().encode(
     [
-      "tuple(address user,address agent,uint256 amountOut,uint256 minAmountOut,uint64 quoteDeadline,uint64 validUntil,uint256 nonce,bytes signature)"
+      "tuple(address user,address agent,uint256 amountOut,uint256 minAmountOut,uint64 quoteDeadline,uint64 validUntil,uint256 nonce,bytes32 requestSalt,bytes signature)"
     ],
     [
       {
@@ -231,6 +235,7 @@ async function main() {
         quoteDeadline,
         validUntil,
         nonce,
+        requestSalt,
         signature
       }
     ]

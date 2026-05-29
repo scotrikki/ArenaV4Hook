@@ -1,6 +1,8 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
+const QUOTE_REJECT_INVALID_SIGNATURE = 8n;
+
 describe("ArenaV4Hook", function () {
   async function deployFixture() {
     const [owner, user, agent1, agent2, outsider] = await ethers.getSigners();
@@ -22,7 +24,7 @@ describe("ArenaV4Hook", function () {
 
     await registry.connect(owner).setHook(await hook.getAddress());
 
-    return { hook, manager, registry, user, agent1, outsider };
+    return { hook, manager, registry, user, agent1, agent2, outsider };
   }
 
   function makePoolKey(hookAddress) {
@@ -46,7 +48,7 @@ describe("ArenaV4Hook", function () {
   function buildHookData(payload) {
     return ethers.AbiCoder.defaultAbiCoder().encode(
       [
-        "tuple(address user,address agent,uint256 amountOut,uint256 minAmountOut,uint64 quoteDeadline,uint64 validUntil,uint256 nonce,bytes signature)"
+        "tuple(address user,address agent,uint256 amountOut,uint256 minAmountOut,uint64 quoteDeadline,uint64 validUntil,uint256 nonce,bytes32 requestSalt,bytes signature)"
       ],
       [payload]
     );
@@ -79,8 +81,16 @@ describe("ArenaV4Hook", function () {
     const latest = await ethers.provider.getBlock("latest");
     const quoteDeadline = BigInt(latest.timestamp + 60);
     const validUntil = BigInt(latest.timestamp + 30);
+    const requestSalt = ethers.keccak256(ethers.toUtf8Bytes("valid-quote-request"));
 
-    const requestId = await hook.computeRequestId(user.address, 5000n, key.currency0, key.currency1, true);
+    const requestId = await hook.computeRequestIdWithSalt(
+      user.address,
+      5000n,
+      key.currency0,
+      key.currency1,
+      true,
+      requestSalt
+    );
     const signature = await signQuote(hook, agent1, requestId, 5200n, validUntil, 0n);
 
     const hookData = buildHookData({
@@ -91,6 +101,7 @@ describe("ArenaV4Hook", function () {
       quoteDeadline,
       validUntil,
       nonce: 0n,
+      requestSalt,
       signature
     });
 
@@ -124,8 +135,16 @@ describe("ArenaV4Hook", function () {
     const latest = await ethers.provider.getBlock("latest");
     const quoteDeadline = BigInt(latest.timestamp + 60);
     const validUntil = BigInt(latest.timestamp + 30);
+    const requestSalt = ethers.keccak256(ethers.toUtf8Bytes("invalid-signature-request"));
 
-    const requestId = await hook.computeRequestId(user.address, 3000n, key.currency0, key.currency1, true);
+    const requestId = await hook.computeRequestIdWithSalt(
+      user.address,
+      3000n,
+      key.currency0,
+      key.currency1,
+      true,
+      requestSalt
+    );
     const badSignature = await signQuote(hook, outsider, requestId, 3150n, validUntil, 0n);
 
     const hookData = buildHookData({
@@ -136,6 +155,7 @@ describe("ArenaV4Hook", function () {
       quoteDeadline,
       validUntil,
       nonce: 0n,
+      requestSalt,
       signature: badSignature
     });
 
@@ -147,6 +167,13 @@ describe("ArenaV4Hook", function () {
       key.currency1,
       3000n,
       quoteDeadline
+    );
+    await expect(beforeTx).to.emit(hook, "QuoteRejected").withArgs(
+      requestId,
+      agent1.address,
+      QUOTE_REJECT_INVALID_SIGNATURE,
+      0n,
+      0n
     );
 
     const afterTx = await manager.callAfterSwap(await hook.getAddress(), user.address, key, params, -3000, 3000, hookData);
@@ -161,5 +188,70 @@ describe("ArenaV4Hook", function () {
       0n,
       true
     );
+  });
+
+  it("keeps repeated swaps isolated when requestSalt differs", async function () {
+    const { hook, manager, user } = await deployFixture();
+    const key = makePoolKey(await hook.getAddress());
+    const params = makeSwapParams(-5000n);
+
+    const latest = await ethers.provider.getBlock("latest");
+    const quoteDeadline = BigInt(latest.timestamp + 60);
+    const validUntil = BigInt(latest.timestamp + 30);
+    const requestSalt1 = ethers.keccak256(ethers.toUtf8Bytes("request-salt-1"));
+    const requestSalt2 = ethers.keccak256(ethers.toUtf8Bytes("request-salt-2"));
+
+    const requestId1 = await hook.computeRequestIdWithSalt(
+      user.address,
+      5000n,
+      key.currency0,
+      key.currency1,
+      true,
+      requestSalt1
+    );
+    const requestId2 = await hook.computeRequestIdWithSalt(
+      user.address,
+      5000n,
+      key.currency0,
+      key.currency1,
+      true,
+      requestSalt2
+    );
+
+    expect(requestId1).to.not.equal(requestId2);
+
+    const hookData1 = buildHookData({
+      user: user.address,
+      agent: ethers.ZeroAddress,
+      amountOut: 0n,
+      minAmountOut: 4500n,
+      quoteDeadline,
+      validUntil,
+      nonce: 0n,
+      requestSalt: requestSalt1,
+      signature: "0x"
+    });
+    const hookData2 = buildHookData({
+      user: user.address,
+      agent: ethers.ZeroAddress,
+      amountOut: 0n,
+      minAmountOut: 4600n,
+      quoteDeadline,
+      validUntil,
+      nonce: 0n,
+      requestSalt: requestSalt2,
+      signature: "0x"
+    });
+
+    await manager.callBeforeSwap(await hook.getAddress(), user.address, key, params, hookData1);
+    await manager.callBeforeSwap(await hook.getAddress(), user.address, key, params, hookData2);
+
+    const request1 = await hook.requests(requestId1);
+    const request2 = await hook.requests(requestId2);
+
+    expect(request1.sender).to.equal(user.address);
+    expect(request1.minAmountOut).to.equal(4500n);
+    expect(request2.sender).to.equal(user.address);
+    expect(request2.minAmountOut).to.equal(4600n);
   });
 });

@@ -40,7 +40,31 @@ contract ArenaV4Hook is BaseHook {
         uint64 quoteDeadline;
         uint64 validUntil;
         uint256 nonce;
+        bytes32 requestSalt;
         bytes signature;
+    }
+
+    struct LegacyHookQuoteData {
+        address user;
+        address agent;
+        uint256 amountOut;
+        uint256 minAmountOut;
+        uint64 quoteDeadline;
+        uint64 validUntil;
+        uint256 nonce;
+        bytes signature;
+    }
+
+    enum QuoteRejectReason {
+        None,
+        EmptyQuote,
+        AgentNotWhitelisted,
+        RequestNotFound,
+        RequestAlreadySettled,
+        QuoteWindowClosed,
+        QuoteExpired,
+        InvalidNonce,
+        InvalidSignature
     }
 
     AgentQuoteRegistry public immutable registry;
@@ -65,6 +89,14 @@ contract ArenaV4Hook is BaseHook {
         address indexed agent,
         uint256 amountOut,
         uint64 validUntil
+    );
+
+    event QuoteRejected(
+        bytes32 indexed requestId,
+        address indexed agent,
+        uint8 reason,
+        uint256 providedNonce,
+        uint256 expectedNonce
     );
 
     event QuoteSelected(
@@ -120,7 +152,18 @@ contract ArenaV4Hook is BaseHook {
         pure
         returns (bytes32)
     {
-        return keccak256(abi.encode(sender, amountIn, tokenIn, tokenOut, zeroForOne));
+        return computeRequestIdWithSalt(sender, amountIn, tokenIn, tokenOut, zeroForOne, bytes32(0));
+    }
+
+    function computeRequestIdWithSalt(
+        address sender,
+        uint256 amountIn,
+        address tokenIn,
+        address tokenOut,
+        bool zeroForOne,
+        bytes32 requestSalt
+    ) public pure returns (bytes32) {
+        return keccak256(abi.encode(sender, amountIn, tokenIn, tokenOut, zeroForOne, requestSalt));
     }
 
     function quoteMessageHash(bytes32 requestId, uint256 amountOut, uint64 validUntil, uint256 nonce)
@@ -133,6 +176,14 @@ contract ArenaV4Hook is BaseHook {
 
     function decodeHookData(bytes calldata hookData) external pure returns (HookQuoteData memory quoteData) {
         quoteData = abi.decode(hookData, (HookQuoteData));
+    }
+
+    function decodeLegacyHookData(bytes calldata hookData)
+        external
+        pure
+        returns (LegacyHookQuoteData memory quoteData)
+    {
+        quoteData = abi.decode(hookData, (LegacyHookQuoteData));
     }
 
     function _beforeSwap(address sender, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
@@ -213,18 +264,11 @@ contract ArenaV4Hook is BaseHook {
         view
         returns (bytes32)
     {
-        address requestUser = sender;
-        if (hookData.length > 0) {
-            try this.decodeHookData(hookData) returns (HookQuoteData memory decoded) {
-                if (decoded.user != address(0)) {
-                    requestUser = decoded.user;
-                }
-            } catch {}
-        }
-
+        (address requestUser, bytes32 requestSalt) = _resolveRequestContext(sender, hookData);
         (address tokenIn, address tokenOut) = _resolveTokens(key, params.zeroForOne);
         uint256 amountIn = _abs(params.amountSpecified);
-        bytes32 requestId = computeRequestId(requestUser, amountIn, tokenIn, tokenOut, params.zeroForOne);
+        bytes32 requestId =
+            computeRequestIdWithSalt(requestUser, amountIn, tokenIn, tokenOut, params.zeroForOne, requestSalt);
         if (requests[requestId].sender == address(0)) {
             return bytes32(0);
         }
@@ -233,25 +277,35 @@ contract ArenaV4Hook is BaseHook {
 
     function _trySubmitQuote(bytes32 requestId, HookQuoteData memory quoteData) internal {
         if (quoteData.agent == address(0) || quoteData.amountOut == 0) {
+            _rejectQuote(requestId, quoteData.agent, QuoteRejectReason.EmptyQuote, quoteData.nonce, 0);
             return;
         }
         if (!registry.whitelistedAgents(quoteData.agent)) {
+            _rejectQuote(requestId, quoteData.agent, QuoteRejectReason.AgentNotWhitelisted, quoteData.nonce, 0);
             return;
         }
 
         SwapRequest storage request = requests[requestId];
-        if (request.sender == address(0) || request.settled) {
+        if (request.sender == address(0)) {
+            _rejectQuote(requestId, quoteData.agent, QuoteRejectReason.RequestNotFound, quoteData.nonce, 0);
+            return;
+        }
+        if (request.settled) {
+            _rejectQuote(requestId, quoteData.agent, QuoteRejectReason.RequestAlreadySettled, quoteData.nonce, 0);
             return;
         }
         if (block.timestamp > request.quoteDeadline) {
+            _rejectQuote(requestId, quoteData.agent, QuoteRejectReason.QuoteWindowClosed, quoteData.nonce, 0);
             return;
         }
         if (quoteData.validUntil < block.timestamp) {
+            _rejectQuote(requestId, quoteData.agent, QuoteRejectReason.QuoteExpired, quoteData.nonce, 0);
             return;
         }
 
         uint256 expectedNonce = agentNonces[quoteData.agent];
         if (quoteData.nonce != expectedNonce) {
+            _rejectQuote(requestId, quoteData.agent, QuoteRejectReason.InvalidNonce, quoteData.nonce, expectedNonce);
             return;
         }
 
@@ -262,6 +316,7 @@ contract ArenaV4Hook is BaseHook {
                 quoteData.signature
             )
         ) {
+            _rejectQuote(requestId, quoteData.agent, QuoteRejectReason.InvalidSignature, quoteData.nonce, expectedNonce);
             return;
         }
 
@@ -276,6 +331,24 @@ contract ArenaV4Hook is BaseHook {
         }
 
         emit QuoteSubmitted(requestId, quoteData.agent, quoteData.amountOut, quoteData.validUntil);
+    }
+
+    function _resolveRequestContext(address sender, bytes calldata hookData)
+        internal
+        view
+        returns (address requestUser, bytes32 requestSalt)
+    {
+        requestUser = sender;
+
+        HookQuoteData memory quoteData;
+        bool hasQuoteData;
+        (quoteData, hasQuoteData) = _tryDecodeHookData(hookData);
+        if (hasQuoteData) {
+            if (quoteData.user != address(0)) {
+                requestUser = quoteData.user;
+            }
+            requestSalt = quoteData.requestSalt;
+        }
     }
 
     function _resolveTokens(PoolKey calldata key, bool zeroForOne) internal pure returns (address tokenIn, address tokenOut) {
@@ -306,6 +379,7 @@ contract ArenaV4Hook is BaseHook {
         if (hasQuoteData && quoteData.user != address(0)) {
             requestUser = quoteData.user;
         }
+        bytes32 requestSalt = hasQuoteData ? quoteData.requestSalt : bytes32(0);
 
         (address tokenIn, address tokenOut) = _resolveTokens(key, params.zeroForOne);
         uint256 amountIn = _abs(params.amountSpecified);
@@ -317,7 +391,7 @@ contract ArenaV4Hook is BaseHook {
             minAmountOut = quoteData.minAmountOut;
         }
 
-        requestId = computeRequestId(requestUser, amountIn, tokenIn, tokenOut, params.zeroForOne);
+        requestId = computeRequestIdWithSalt(requestUser, amountIn, tokenIn, tokenOut, params.zeroForOne, requestSalt);
         requests[requestId] = SwapRequest({
             sender: requestUser,
             tokenIn: tokenIn,
@@ -340,8 +414,40 @@ contract ArenaV4Hook is BaseHook {
         try this.decodeHookData(hookData) returns (HookQuoteData memory decoded) {
             return (decoded, true);
         } catch {
-            return (quoteData, false);
+            try this.decodeLegacyHookData(hookData) returns (LegacyHookQuoteData memory legacyDecoded) {
+                return (_upgradeLegacyHookData(legacyDecoded), true);
+            } catch {
+                return (quoteData, false);
+            }
         }
+    }
+
+    function _upgradeLegacyHookData(LegacyHookQuoteData memory legacyData)
+        internal
+        pure
+        returns (HookQuoteData memory quoteData)
+    {
+        quoteData = HookQuoteData({
+            user: legacyData.user,
+            agent: legacyData.agent,
+            amountOut: legacyData.amountOut,
+            minAmountOut: legacyData.minAmountOut,
+            quoteDeadline: legacyData.quoteDeadline,
+            validUntil: legacyData.validUntil,
+            nonce: legacyData.nonce,
+            requestSalt: bytes32(0),
+            signature: legacyData.signature
+        });
+    }
+
+    function _rejectQuote(
+        bytes32 requestId,
+        address agent,
+        QuoteRejectReason reason,
+        uint256 providedNonce,
+        uint256 expectedNonce
+    ) internal {
+        emit QuoteRejected(requestId, agent, uint8(reason), providedNonce, expectedNonce);
     }
 
     function _abs(int256 value) internal pure returns (uint256) {
