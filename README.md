@@ -1,7 +1,36 @@
-# OKX Hook Hackathon (Agent RFQ Arena Hook - Full Feature)
+# ArenaV4Hook
 
-This repository contains a minimal PoC for the `A: Agent RFQ Arena Hook` direction from:
-- `docs/superpowers/specs/2026-05-26-hook-hackathon-ai-agent-directions-design.md`
+ArenaV4Hook is a Uniswap v4 hook demo that turns a swap into an AI Agent RFQ arena. A swap-scoped quote request is opened, whitelisted agents submit signed quotes, the hook selects the best usable `amountOut`, and the chain records measurable execution quality: price improvement, quote count, latency, fallback status, and agent reputation.
+
+The next product layer is a verifiable Agent execution-quality market: every accepted quote, selected winner, fallback, latency signal, and price improvement becomes part of an Agent Performance Passport.
+
+The current product target is an enterprise-grade testnet demo for fundraising and technical evaluation. It is not production-ready mainnet infrastructure yet.
+
+## Why it exists
+
+Large swaps can lose value through slippage, stale routing, and opaque execution quality. ArenaV4Hook makes execution quality competitive and auditable by letting agents compete on price improvement while the hook emits objective metrics for every settled request.
+
+Core evaluation metrics:
+
+- `baselineAmountOut`
+- `finalAmountOut`
+- `improvementBps`
+- `quoteCount`
+- `latencySeconds`
+- `usedFallback`
+- per-agent submissions, wins, and positive improvement
+- estimated user surplus (`finalAmountOut - baselineAmountOut`)
+- order size class and routing mode
+- Agent Performance Passport signals
+
+## Architecture
+
+1. A user or periphery flow starts a v4 swap with Arena hook data.
+2. `ArenaV4Hook.beforeSwap` opens a request and can accept an inline signed quote.
+3. Additional signed quotes can be submitted to an open request through `ArenaV4Hook.submitQuote` for split-phase demo and custom periphery flows.
+4. The hook stores the highest usable `amountOut` as the current best quote.
+5. `ArenaV4Hook.afterSwap` settles once, falls back if no usable quote exists, records registry stats, and emits quality metrics.
+6. `scripts/demo-report.js` turns those proof files into a Surplus Lens, Order Intelligence, and Agent Performance Passport for investor and enterprise review.
 
 ## Implemented features
 
@@ -11,7 +40,7 @@ This repository contains a minimal PoC for the `A: Agent RFQ Arena Hook` directi
   - per-agent stats (`submissions`, `wins`, `cumulativePositiveImprovementBps`)
 - `ArenaHook.sol`
   - quote window opening
-  - signature-based quote submission (`submitQuote(requestId, agent, amountOut, validUntil, signature)`)
+  - signature-based quote submission (`submitQuote(requestId, agent, amountOut, validUntil, nonce, signature)`)
   - best quote selection by highest `amountOut`
   - fallback logic for:
     - missing/expired quotes
@@ -26,6 +55,7 @@ This repository contains a minimal PoC for the `A: Agent RFQ Arena Hook` directi
   - inherits `BaseHook`
   - enables `beforeSwap` + `afterSwap` permissions
   - hookData-driven quote submission (signature + nonce validation)
+  - external `submitQuote` intake for multiple signed agent quotes on an open request
   - fallback settlement and quality metrics in `afterSwap`
   - temporary `validateHookAddress` no-op for local/dev tests (production should deploy with HookMiner)
 - Real v4 local flow (Step 2)
@@ -33,8 +63,30 @@ This repository contains a minimal PoC for the `A: Agent RFQ Arena Hook` directi
   - mines CREATE2 salt so hook low 14 bits match `beforeSwap/afterSwap` flags (`0xC0`)
   - initializes pool, adds liquidity, executes real swap via unlock callback
   - emits and validates `QuoteWindowOpened/QuoteSubmitted/QuoteSelected/SwapQualityRecorded`
-- full test suite (12 passing tests)
+- focused test suite for quote validation, fallback, request isolation, and multi-agent selection
 - local deployment script for full wiring (`Registry -> Hook -> whitelist`)
+- demo reporter that shows deployment evidence, surplus, order routing mode, and Agent Performance Passport
+
+## Current enterprise status
+
+| Area | Status |
+| --- | --- |
+| Core v4 hook demo | Working locally and on xLayer testnet |
+| Agent signature validation | Implemented with nonce replay protection |
+| Multi-agent quote selection | Covered by tests through `submitQuote` |
+| Surplus Lens | Implemented in `npm run demo:report` |
+| Agent Performance Passport | Implemented as a proof-file reporter layer |
+| Enterprise API prototype | Implemented as a local read-only proof-file API |
+| Fallback observability | Implemented through `SwapQualityRecorded` |
+| Production hook address validation | Not enabled in demo build; see security notes |
+| Multisig, pause, timelock | Planned, not implemented |
+| External audit | Not completed |
+
+See `docs/security-notes.md` before presenting this as anything beyond a testnet demo.
+
+For the product innovation layer, see `docs/execution-quality-market.md`.
+
+For the enterprise application plan, see `docs/enterprise-architecture.md`, `docs/production-readiness-roadmap.md`, `docs/api-reference.md`, and `docs/monitoring-runbook.md`.
 
 ## Project structure
 
@@ -50,6 +102,11 @@ This repository contains a minimal PoC for the `A: Agent RFQ Arena Hook` directi
 - `test/ArenaV4Hook.t.js` - v4 hook tests
 - `scripts/deploy-arena-hook.js` - full deployment and setup
 - `scripts/v4-local-flow.js` - one-command real v4 local pipeline demo
+- `scripts/demo-report.js` - proof-file execution-quality reporter
+- `scripts/agent-leaderboard.js` - multi-proof Agent leaderboard reporter
+- `scripts/enterprise-readiness.js` - enterprise demo readiness and production blocker report
+- `packages/api/` - local read-only enterprise API prototype backed by proof files
+- `packages/sdk/` - JavaScript helpers for request IDs, quote signatures, and hookData encoding
 - `hardhat.config.js` - Hardhat config
 
 ## Prerequisites
@@ -69,9 +126,7 @@ npm install
 npx hardhat test
 ```
 
-Expected result:
-
-- `12 passing`
+Expected result: all tests passing.
 
 ## Run real v4 local flow (Step 2)
 
@@ -86,6 +141,54 @@ This will:
 3. initialize pool + add liquidity + run real swap
 4. print transaction hashes and hook event results
 5. write JSON proof under `deployments/v4-local-flow-*.json`
+
+## Enterprise demo path
+
+For a technical evaluation or investor demo, use this order:
+
+1. Run `npm test` to prove quote validation, fallback behavior, request isolation, and multi-agent selection.
+2. Run `npm run v4:local-flow` to prove the real v4 local pipeline with hook events.
+3. Run `npm run demo:report` to print the latest deployment addresses, transactions, Surplus Lens, Order Intelligence, and Agent Performance Passport.
+4. Run `npm run agents:leaderboard` to aggregate proof files into an Agent leaderboard.
+5. Run `npm run enterprise:check` to print testnet demo readiness and remaining production blockers.
+6. Open `deployments/v4-xlayerTestnet-latest.json` and the latest `submissions/submission-v4-xlayerTestnet-*.md` to show xLayer testnet evidence.
+7. Review `docs/security-notes.md` and `docs/production-readiness-roadmap.md` to clearly separate demo guarantees from production readiness work.
+
+To report a specific proof file:
+
+```bash
+DEPLOYMENT_FILE=deployments/v4-local-flow-....json npm run demo:report
+```
+
+On PowerShell:
+
+```powershell
+$env:DEPLOYMENT_FILE="deployments/v4-local-flow-....json"; npm run demo:report; Remove-Item Env:DEPLOYMENT_FILE
+```
+
+To print the current enterprise readiness posture:
+
+```bash
+npm run enterprise:check
+```
+
+This command is intentionally honest: it can mark the testnet enterprise demo as ready while still reporting mainnet production as blocked until governance, EIP-712, pause controls, monitoring, and audit work are complete.
+
+To aggregate proof files into an Agent leaderboard:
+
+```bash
+npm run agents:leaderboard
+```
+
+For integration helpers, see `packages/sdk/README.md`.
+
+To start the local read-only API prototype:
+
+```bash
+npm run api:dev
+```
+
+Then open `http://localhost:8787/v1/hook/status` or `http://localhost:8787/v1/quality/summary`.
 
 ## Deploy real v4 flow to X Layer Testnet (Step 3)
 
@@ -257,7 +360,10 @@ This script deploys registry + hook, submits signed quotes from two agents, sett
 
 ## Next coding steps
 
-1. Add replay protection nonce per agent quote (optional hardening)
-2. Add minimum bond integration (connect to B-plan fallback/security)
-3. Add script that emits sample `QuoteSelected` and `SwapQualityRecorded` events for demo recording
-4. Add a lightweight dashboard (or CLI reporter) to display win rate and average improvement
+1. Add a multi-proof Agent leaderboard that aggregates several `v4-local-flow-*` and xLayer deployment files.
+2. Add order-size adaptive events in `ArenaV4Hook` so small/mid/large routing decisions are explicit on-chain.
+3. Add Agent capability attestations for supported pairs, max order size, risk level, and expiry.
+4. Add EIP-712 typed quote signing and a TypeScript helper for agents.
+5. Add pausable controls and multisig handoff guidance for the registry and hook owner operations.
+6. Add gas snapshots and fuzz tests for nonce, expiry, fallback, and repeated request salt boundaries.
+7. Add an explicit production quote lifecycle design before any mainnet deployment.

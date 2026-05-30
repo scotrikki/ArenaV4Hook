@@ -186,6 +186,29 @@ contract ArenaV4Hook is BaseHook {
         quoteData = abi.decode(hookData, (LegacyHookQuoteData));
     }
 
+    function submitQuote(
+        bytes32 requestId,
+        address agent,
+        uint256 amountOut,
+        uint64 validUntil,
+        uint256 nonce,
+        bytes calldata signature
+    ) external {
+        HookQuoteData memory quoteData = HookQuoteData({
+            user: address(0),
+            agent: agent,
+            amountOut: amountOut,
+            minAmountOut: 0,
+            quoteDeadline: 0,
+            validUntil: validUntil,
+            nonce: nonce,
+            requestSalt: bytes32(0),
+            signature: signature
+        });
+
+        _trySubmitQuote(requestId, quoteData);
+    }
+
     function _beforeSwap(address sender, PoolKey calldata key, SwapParams calldata params, bytes calldata hookData)
         internal
         override
