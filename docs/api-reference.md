@@ -28,6 +28,20 @@ http://localhost:8787/v1
 | `improvementBps` | string | Improvement in basis points |
 | `usedFallback` | boolean | Whether settlement used the baseline swap output |
 
+## `GET /health`
+
+Returns prototype service health and proof count.
+
+Example response:
+
+```json
+{
+  "ok": true,
+  "proofCount": 6,
+  "latestProofFile": "deployments/v4-local-flow-1780108614432.json"
+}
+```
+
 ## `GET /agents`
 
 Returns known Agents and their execution-quality summary.
@@ -107,6 +121,27 @@ Example response:
       "quoteCount": "1",
       "status": "settled",
       "openedAt": "n/a"
+    }
+  ]
+}
+```
+
+## `GET /proofs`
+
+Returns the unique proof identities currently loaded by the local prototype.
+
+Example response:
+
+```json
+{
+  "proofs": [
+    {
+      "identity": "0xed7a5764baf84795122d6f721677d503495759cfa88271c3ab0ff5354618a229",
+      "requestId": "0xed7a5764baf84795122d6f721677d503495759cfa88271c3ab0ff5354618a229",
+      "schemaVersion": "arena-proof-v1",
+      "network": "hardhat",
+      "swapTx": "0x442d7b29107483a94eb359bd9c05566610db8b396a7cb5423e931ec17d5196be",
+      "proofFile": "deployments/v4-local-flow-1780108614432.json"
     }
   ]
 }

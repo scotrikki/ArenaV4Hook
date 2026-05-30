@@ -19,6 +19,7 @@
     "demo:report": "node scripts/demo-report.js",
     "enterprise:check": "node scripts/enterprise-readiness.js",
     "agents:leaderboard": "node scripts/agent-leaderboard.js",
+    "proofs:migrate": "node scripts/migrate-proofs.js",
     "api:dev": "node packages/api/server.js",
     "verify:xlayer-testnet": "hardhat run scripts/verify-deployed.js --network xlayerTestnet",
     "verify:xlayer": "hardhat run scripts/verify-deployed.js --network xlayer",

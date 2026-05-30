@@ -48,7 +48,29 @@ function quality(data) {
   return data.hookEvents?.swapQualityRecorded || data.quality || {};
 }
 
-function addProof(agents, filePath, data) {
+function proofIdentity(data, filePath) {
+  return data.requestId || data.request?.requestId || data.hookEvents?.quoteSelected?.requestId || data.txs?.swap || relativePath(filePath);
+}
+
+function uniqueProofs(files) {
+  const seen = new Set();
+  const proofs = [];
+
+  for (const filePath of files) {
+    const data = readJson(filePath);
+    const identity = proofIdentity(data, filePath);
+    if (seen.has(identity)) {
+      continue;
+    }
+    seen.add(identity);
+    proofs.push({ filePath, data, identity });
+  }
+
+  return proofs;
+}
+
+function addProof(agents, proof) {
+  const { filePath, data } = proof;
   const agent = selectedAgent(data).toLowerCase();
   const current = agents.get(agent) || {
     agent,
@@ -87,14 +109,15 @@ function formatBps(value) {
 
 function main() {
   const files = proofFiles();
+  const proofs = uniqueProofs(files);
   const agents = new Map();
 
-  for (const filePath of files) {
-    const data = readJson(filePath);
+  for (const proof of proofs) {
+    const { data } = proof;
     if (quality(data).usedFallback === true && selectedAgent(data) === "unknown") {
       continue;
     }
-    addProof(agents, filePath, data);
+    addProof(agents, proof);
   }
 
   const rows = [...agents.values()]
@@ -108,6 +131,7 @@ function main() {
 
   console.log("ArenaV4Hook Agent Leaderboard");
   console.log(`Proof files scanned: ${files.length}`);
+  console.log(`Unique proofs counted: ${proofs.length}`);
 
   if (rows.length === 0) {
     console.log("No selected Agent proofs found. Run npm run v4:local-flow or deploy:v4:xlayer-testnet first.");

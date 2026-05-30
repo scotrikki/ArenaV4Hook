@@ -229,12 +229,31 @@ async function main() {
 
   const agentStats = await registry.agentStats(agent.address);
   const out = {
+    schemaVersion: "arena-proof-v1",
     generatedAt: new Date().toISOString(),
     network: hre.network.name,
     chainId: chainId.toString(),
     deployer: owner.address,
     user: user.address,
     agent: agent.address,
+    quoteAgent: agent.address,
+    requestId,
+    requestSalt,
+    signatureVersion: "erc191-demo",
+    request: {
+      requestId,
+      requestSalt,
+      user: owner.address,
+      tokenIn: currency0Addr,
+      tokenOut: currency1Addr,
+      zeroForOne: true,
+      amountIn: swapAmountIn.toString(),
+      minAmountOut: minAmountOut.toString(),
+      quoteDeadline: quoteDeadline.toString(),
+      validUntil: validUntil.toString(),
+      nonce: nonce.toString(),
+      signatureVersion: "erc191-demo"
+    },
     poolManager: poolManagerAddr,
     token0: currency0Addr,
     token1: currency1Addr,
@@ -244,6 +263,32 @@ async function main() {
     hookSalt: salt,
     hookFlagLow14: `0x${(BigInt(await hook.getAddress()) & FLAG_MASK).toString(16)}`,
     flowExecutor: await executor.getAddress(),
+    addresses: {
+      poolManager: poolManagerAddr,
+      token0: currency0Addr,
+      token1: currency1Addr,
+      registry: registryAddr,
+      create2Factory: await c2factory.getAddress(),
+      hook: await hook.getAddress(),
+      flowExecutor: await executor.getAddress()
+    },
+    params: {
+      fee,
+      tickSpacing,
+      sqrtPriceX96: sqrtPriceX96.toString(),
+      liquidityDelta: modifyParams.liquidityDelta.toString(),
+      tickLower: modifyParams.tickLower,
+      tickUpper: modifyParams.tickUpper,
+      directSettleThreshold: directSettleThreshold.toString(),
+      swapAmountIn: swapAmountIn.toString(),
+      quotedAmountOut: quotedAmountOut.toString(),
+      minAmountOut: minAmountOut.toString()
+    },
+    hookMining: {
+      salt,
+      tries,
+      hookFlagLow14: `0x${(BigInt(await hook.getAddress()) & FLAG_MASK).toString(16)}`
+    },
     txs: {
       initialize: initRcpt.hash,
       addLiquidity: addLiqRcpt.hash,
@@ -251,6 +296,24 @@ async function main() {
     },
     selectedAgent: selected.args.agent,
     selectedAmountOut: selected.args.amountOut.toString(),
+    hookEvents: {
+      quoteWindowOpened: true,
+      quoteSubmitted: true,
+      quoteSelected: {
+        requestId,
+        agent: selected.args.agent,
+        amountOut: selected.args.amountOut.toString()
+      },
+      swapQualityRecorded: {
+        requestId,
+        baselineAmountOut: quality.args.baselineAmountOut.toString(),
+        finalAmountOut: quality.args.finalAmountOut.toString(),
+        improvementBps: quality.args.improvementBps.toString(),
+        quoteCount: quality.args.quoteCount.toString(),
+        latencySeconds: quality.args.latencySeconds.toString(),
+        usedFallback: quality.args.usedFallback
+      }
+    },
     quality: {
       baselineAmountOut: quality.args.baselineAmountOut.toString(),
       finalAmountOut: quality.args.finalAmountOut.toString(),

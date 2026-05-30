@@ -20,9 +20,50 @@ function relativePath(filePath) {
   return path.relative(rootDir, filePath).split(path.sep).join("/");
 }
 
+function requestIdOf(proof) {
+  return proof.requestId || proof.request?.requestId || proof.hookEvents?.quoteSelected?.requestId || null;
+}
+
+function hasRealRequestId(proof) {
+  const requestId = requestIdOf(proof);
+  return /^0x[0-9a-fA-F]{64}$/.test(requestId || "");
+}
+
+function proofAgeHours(proof) {
+  if (!proof.generatedAt) {
+    return null;
+  }
+  const generatedAt = Date.parse(proof.generatedAt);
+  if (!Number.isFinite(generatedAt)) {
+    return null;
+  }
+  return (Date.now() - generatedAt) / 36e5;
+}
+
 function resolveProofFile() {
   if (process.env.DEPLOYMENT_FILE) {
     return path.resolve(rootDir, process.env.DEPLOYMENT_FILE);
+  }
+
+  if (!fs.existsSync(deploymentsDir)) {
+    return null;
+  }
+
+  const proofFiles = fs
+    .readdirSync(deploymentsDir)
+    .filter((fileName) => /^v4-(local-flow-.*|xlayerTestnet-.*|xlayerTestnet-latest)\.json$/.test(fileName))
+    .map((fileName) => path.join(deploymentsDir, fileName))
+    .sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs);
+
+  const schemaProof = proofFiles.find((filePath) => {
+    try {
+      return readJson(filePath).schemaVersion === "arena-proof-v1";
+    } catch {
+      return false;
+    }
+  });
+  if (schemaProof) {
+    return schemaProof;
   }
 
   const preferred = path.join(deploymentsDir, "v4-xlayerTestnet-latest.json");
@@ -30,17 +71,7 @@ function resolveProofFile() {
     return preferred;
   }
 
-  if (!fs.existsSync(deploymentsDir)) {
-    return null;
-  }
-
-  const localProofs = fs
-    .readdirSync(deploymentsDir)
-    .filter((fileName) => /^v4-local-flow-.*\.json$/.test(fileName))
-    .map((fileName) => path.join(deploymentsDir, fileName))
-    .sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs);
-
-  return localProofs[0] || null;
+  return proofFiles[0] || null;
 }
 
 function createCheck(label, passed, detail, weight = 0) {
@@ -77,9 +108,20 @@ function getProofChecks(proofFile, proof) {
   const low14 = proof.hookMining?.hookFlagLow14 || proof.hookFlagLow14;
   const improvement = Number(quality.improvementBps);
   const quoteCount = Number(quality.quoteCount);
+  const ageHours = proofAgeHours(proof);
+  const maxProofAgeHours = Number(process.env.MAX_PROOF_AGE_HOURS || 24 * 30);
 
   return [
-    createCheck("deployment proof", true, relativePath(proofFile), 15),
+    createCheck("deployment proof", true, relativePath(proofFile), 10),
+    createCheck("arena proof schema", proof.schemaVersion === "arena-proof-v1", proof.schemaVersion || "legacy-proof", 10),
+    createCheck("real request id", hasRealRequestId(proof), requestIdOf(proof) || "missing", 10),
+    createCheck("swap tx hash", /^0x[0-9a-fA-F]{64}$/.test(proof.txs?.swap || ""), proof.txs?.swap || "missing", 5),
+    createCheck(
+      "proof freshness",
+      ageHours !== null && ageHours <= maxProofAgeHours,
+      ageHours === null ? "generatedAt missing" : `${ageHours.toFixed(1)}h old`,
+      5
+    ),
     createCheck("hook address permission bits", low14 === "0xc0", `low14=${low14 || "n/a"}`, 10),
     createCheck("quote window event", events.quoteWindowOpened === true, String(events.quoteWindowOpened === true), 5),
     createCheck("quote submission event", events.quoteSubmitted === true, String(events.quoteSubmitted === true), 5),

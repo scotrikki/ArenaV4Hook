@@ -131,6 +131,10 @@ function derivedEventStatus(data, eventName) {
   return false;
 }
 
+function requestIdOf(data) {
+  return data.requestId || data.request?.requestId || data.hookEvents?.quoteSelected?.requestId || "n/a";
+}
+
 function classifyOrder(data, quality) {
   const amountIn = parseNumber(valueOf(data, [["params", "swapAmountIn"], ["swapAmountIn"]]));
   const threshold = parseNumber(valueOf(data, [["params", "directSettleThreshold"], ["directSettleThreshold"]]));
@@ -254,10 +258,17 @@ function main() {
   console.log(`Source: ${relativeDisplayPath(deploymentFile)}`);
 
   printSection("Network", [
+    ["schemaVersion", data.schemaVersion || "legacy-proof"],
     ["generatedAt", data.generatedAt || "n/a"],
     ["network", data.network || "n/a"],
     ["chainId", data.chainId || "n/a"],
     ["deployer", compactAddress(data.deployer)]
+  ]);
+
+  printSection("Proof Identity", [
+    ["requestId", requestIdOf(data)],
+    ["requestSalt", valueOf(data, [["request", "requestSalt"], ["requestSalt"]])],
+    ["signatureVersion", valueOf(data, [["request", "signatureVersion"], ["signatureVersion"]], "erc191-demo")]
   ]);
 
   printSection("Contracts", [

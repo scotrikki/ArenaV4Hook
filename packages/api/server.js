@@ -23,8 +23,7 @@ function proofFiles() {
   return fs
     .readdirSync(deploymentsDir)
     .filter((fileName) => /^v4-(local-flow-.*|xlayerTestnet-.*|xlayerTestnet-latest)\.json$/.test(fileName))
-    .map((fileName) => path.join(deploymentsDir, fileName))
-    .sort();
+    .map((fileName) => path.join(deploymentsDir, fileName));
 }
 
 function selectedAgent(data) {
@@ -44,12 +43,38 @@ function formatBps(value) {
   return String(Math.round(value));
 }
 
-function computeRequestIdPlaceholder(data, filePath) {
-  return data.hookEvents?.quoteSelected?.requestId || data.requestId || `proof:${relativePath(filePath)}`;
+function requestIdOf(data, filePath) {
+  return data.requestId || data.request?.requestId || data.hookEvents?.quoteSelected?.requestId || `proof:${relativePath(filePath)}`;
+}
+
+function proofIdentity(data, filePath) {
+  return data.requestId || data.request?.requestId || data.hookEvents?.quoteSelected?.requestId || data.txs?.swap || relativePath(filePath);
 }
 
 function loadProofs() {
-  return proofFiles().map((filePath) => ({ filePath, data: readJson(filePath) }));
+  const seen = new Set();
+  const proofs = [];
+
+  const files = proofFiles().sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs);
+
+  for (const filePath of files) {
+    const data = readJson(filePath);
+    const identity = proofIdentity(data, filePath);
+    if (seen.has(identity)) {
+      continue;
+    }
+    seen.add(identity);
+    proofs.push({ filePath, data, identity });
+  }
+
+  return proofs.sort((left, right) => {
+    const leftSchema = left.data.schemaVersion === "arena-proof-v1" ? 1 : 0;
+    const rightSchema = right.data.schemaVersion === "arena-proof-v1" ? 1 : 0;
+    if (leftSchema !== rightSchema) {
+      return rightSchema - leftSchema;
+    }
+    return fs.statSync(right.filePath).mtimeMs - fs.statSync(left.filePath).mtimeMs;
+  });
 }
 
 function buildAgents(proofs) {
@@ -104,18 +129,21 @@ function buildRequests(proofs) {
   return proofs.map((proof) => {
     const data = proof.data;
     const eventQuality = quality(data);
-    const requestId = computeRequestIdPlaceholder(data, proof.filePath);
+    const requestId = requestIdOf(data, proof.filePath);
     return {
       requestId,
+      identity: proof.identity,
+      schemaVersion: data.schemaVersion || "legacy-proof",
       network: data.network || "unknown",
       chainId: data.chainId || "n/a",
       tokenIn: data.addresses?.token0 || data.tokenIn || "n/a",
       tokenOut: data.addresses?.token1 || data.tokenOut || "n/a",
-      amountIn: data.params?.swapAmountIn || data.swapAmountIn || "n/a",
+      amountIn: data.request?.amountIn || data.params?.swapAmountIn || data.swapAmountIn || "n/a",
       quoteCount: eventQuality.quoteCount || "0",
       status: eventQuality.usedFallback === true ? "fallback" : "settled",
       selectedAgent: selectedAgent(data),
       proofFile: relativePath(proof.filePath),
+      swapTx: data.txs?.swap || "n/a",
       settlement: {
         selectedAgent: selectedAgent(data),
         baselineAmountOut: eventQuality.baselineAmountOut || "n/a",
@@ -146,8 +174,12 @@ function buildQualitySummary(requests) {
 }
 
 function latestProof(proofs) {
+  const schemaProof = proofs.find((proof) => proof.data.schemaVersion === "arena-proof-v1");
+  if (schemaProof) {
+    return schemaProof;
+  }
   const xlayer = proofs.find((proof) => path.basename(proof.filePath) === "v4-xlayerTestnet-latest.json");
-  return xlayer || proofs[proofs.length - 1] || null;
+  return xlayer || proofs[0] || null;
 }
 
 function buildHookStatus(proofs) {
@@ -165,9 +197,34 @@ function buildHookStatus(proofs) {
     registry: data.addresses?.registry || data.registry || "n/a",
     low14: data.hookMining?.hookFlagLow14 || data.hookFlagLow14 || "n/a",
     latestProofFile: relativePath(latest.filePath),
+    latestRequestId: requestIdOf(data, latest.filePath),
     testnetDemoReady: events.quoteWindowOpened === true && Boolean(eventQuality.improvementBps),
     mainnetProductionReady: false
   };
+}
+
+function filterRequests(requests, searchParams) {
+  const network = searchParams.get("network");
+  const agent = searchParams.get("agent");
+  const status = searchParams.get("status");
+  const limit = Math.min(Number(searchParams.get("limit") || 50), 200);
+
+  return requests
+    .filter((request) => !network || request.network === network)
+    .filter((request) => !agent || request.selectedAgent.toLowerCase() === agent.toLowerCase())
+    .filter((request) => !status || status === "all" || request.status === status)
+    .slice(0, Number.isFinite(limit) && limit > 0 ? limit : 50);
+}
+
+function proofSummary(proofs) {
+  return proofs.map((proof) => ({
+    identity: proof.identity,
+    requestId: requestIdOf(proof.data, proof.filePath),
+    schemaVersion: proof.data.schemaVersion || "legacy-proof",
+    network: proof.data.network || "unknown",
+    swapTx: proof.data.txs?.swap || "n/a",
+    proofFile: relativePath(proof.filePath)
+  }));
 }
 
 function sendJson(response, statusCode, payload) {
@@ -188,7 +245,16 @@ function route(request, response) {
   if (pathname === "" || pathname === "/v1") {
     sendJson(response, 200, {
       service: "ArenaV4Hook Enterprise API Prototype",
-      endpoints: ["/v1/agents", "/v1/requests", "/v1/hook/status", "/v1/quality/summary"]
+      endpoints: ["/v1/health", "/v1/agents", "/v1/requests", "/v1/proofs", "/v1/hook/status", "/v1/quality/summary"]
+    });
+    return;
+  }
+
+  if (pathname === "/v1/health") {
+    sendJson(response, 200, {
+      ok: true,
+      proofCount: proofs.length,
+      latestProofFile: latestProof(proofs) ? relativePath(latestProof(proofs).filePath) : null
     });
     return;
   }
@@ -206,14 +272,19 @@ function route(request, response) {
   }
 
   if (pathname === "/v1/requests") {
-    sendJson(response, 200, { requests });
+    sendJson(response, 200, { requests: filterRequests(requests, url.searchParams) });
     return;
   }
 
   if (pathname.startsWith("/v1/requests/")) {
     const requestId = decodeURIComponent(pathname.split("/").pop());
-    const found = requests.find((item) => item.requestId === requestId || item.proofFile.endsWith(requestId));
+    const found = requests.find((item) => item.requestId === requestId || item.identity === requestId || item.proofFile.endsWith(requestId));
     sendJson(response, found ? 200 : 404, found || { error: "request not found" });
+    return;
+  }
+
+  if (pathname === "/v1/proofs") {
+    sendJson(response, 200, { proofs: proofSummary(proofs) });
     return;
   }
 

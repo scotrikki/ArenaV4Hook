@@ -105,6 +105,7 @@ For the enterprise application plan, see `docs/enterprise-architecture.md`, `doc
 - `scripts/demo-report.js` - proof-file execution-quality reporter
 - `scripts/agent-leaderboard.js` - multi-proof Agent leaderboard reporter
 - `scripts/enterprise-readiness.js` - enterprise demo readiness and production blocker report
+- `scripts/migrate-proofs.js` - upgrades legacy proof JSON to the unified `arena-proof-v1` schema
 - `packages/api/` - local read-only enterprise API prototype backed by proof files
 - `packages/sdk/` - JavaScript helpers for request IDs, quote signatures, and hookData encoding
 - `hardhat.config.js` - Hardhat config
@@ -178,6 +179,12 @@ To aggregate proof files into an Agent leaderboard:
 
 ```bash
 npm run agents:leaderboard
+```
+
+To upgrade legacy proof files to the unified proof schema:
+
+```bash
+npm run proofs:migrate
 ```
 
 For integration helpers, see `packages/sdk/README.md`.

@@ -28,12 +28,16 @@ $env:PORT="8790"; npm run api:dev; Remove-Item Env:PORT
 
 ## Endpoints
 
+- `GET /v1/health`
 - `GET /v1/agents`
 - `GET /v1/agents/{agent}`
 - `GET /v1/requests`
 - `GET /v1/requests/{requestId}`
+- `GET /v1/proofs`
 - `GET /v1/hook/status`
 - `GET /v1/quality/summary`
+
+`GET /v1/requests` supports `network`, `agent`, `status`, and `limit` query parameters.
 
 ## Scope
 
